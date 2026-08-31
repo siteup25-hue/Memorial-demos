@@ -150,9 +150,11 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .station{position:absolute;inset-inline:0;display:grid;justify-items:center;
   padding-inline:var(--gutter);pointer-events:none}
 .station > *{pointer-events:auto}
-.st-card{background:rgba(7,9,14,.66);border:1px solid rgba(255,231,184,.14);
-  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
-  border-radius:10px;padding:1.1rem 1.7rem;text-align:center;max-inline-size:26rem}
+/* no backdrop-filter here: blurring the live canvas behind the card forces a
+   repaint every frame on Android and reads as flicker — opaque-ish bg instead */
+.st-card{background:rgba(7,9,14,.82);border:1px solid rgba(255,231,184,.14);
+  border-radius:10px;padding:1.1rem 1.7rem;text-align:center;max-inline-size:26rem;
+  transform:translateZ(0)}
 .st-card time{font-family:var(--font-d);font-weight:600;color:var(--lamp);
   font-size:clamp(1.8rem,4.5vi,2.6rem);line-height:1.1;display:block}
 .st-card h2,.st-card h3{font-family:var(--font-d);font-weight:600;font-size:1.35rem;margin-block-start:.15rem}
@@ -688,11 +690,6 @@ function bootFull(THREE){
 
   /* ---------- world building ---------- */
   var texLoader = new THREE.TextureLoader();
-  function photoTex(url){
-    var t = texLoader.load(url);
-    t.colorSpace = THREE.SRGBColorSpace;
-    return t;
-  }
   function radialCanvas(inner, outer, stops){
     var c = document.createElement('canvas'); c.width = c.height = 128;
     var x = c.getContext('2d');
@@ -838,10 +835,16 @@ function bootFull(THREE){
   var frames = [];
   PHOTOS.forEach(function(ph, i){
     var g = new THREE.Group();
+    /* hidden until the photo texture has decoded — an untextured MeshBasicMaterial
+       renders WHITE, which reads as huge cream slabs on phones where 30 embedded
+       images take seconds to decode */
+    g.visible = false;
     var frame = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 2.38),
       new THREE.MeshBasicMaterial({ color:0x8A7A45 }));
+    var tex = texLoader.load(ph[0], function(){ g.visible = true; });
+    tex.colorSpace = THREE.SRGBColorSpace;
     var img = new THREE.Mesh(new THREE.PlaneGeometry(3.26, 2.16),
-      new THREE.MeshBasicMaterial({ map:photoTex(ph[0]) }));
+      new THREE.MeshBasicMaterial({ map:tex }));
     img.position.z = .012;
     g.add(frame); g.add(img);
     curve.getPointAt(ph[1], _pos);
@@ -949,12 +952,8 @@ function bootFull(THREE){
   addEventListener('pointermove', function(e){
     S.ptx = (e.clientX/innerWidth - .5)*2; S.pty = (e.clientY/innerHeight - .5)*2;
   }, { passive:true });
-  var blocked = false;
-  lenis.on('scroll', function(l){
-    var v = Math.abs(l.velocity);
-    if(v > 1.5 && !blocked){ blocked = true; doc.style.pointerEvents = 'none'; }
-    if(v < 1.0 && blocked){ blocked = false; doc.style.pointerEvents = 'auto'; }
-  });
+  /* no pointer-events toggling on <html> during scroll — it forces a full
+     style/hover recalc every frame and reads as flicker over the canvas */
   ScrollTrigger.create({
     trigger:'.walk', start:'top top', end:'bottom bottom',
     onUpdate:function(self){ S.target = self.progress; }
@@ -977,8 +976,17 @@ function bootFull(THREE){
     if(p50 > tier.period*1.5){ tier.bad++; tier.good = 0; }
     else if(p50 < tier.period*1.15){ tier.good++; tier.bad = 0; }
     var order = ['low','medium','high'], i = order.indexOf(tier.name);
-    if(tier.bad >= 2 && i > 0){ tier.name = order[i-1]; tier.bad = 0; tierApply(); }
-    else if(tier.good >= 6 && i < 2){ tier.name = order[i+1]; tier.good = 0; tierApply(); }
+    if(tier.bad >= 2 && i > 0) tierChange(order[i-1]);
+    else if(tier.good >= 10 && i < 2) tierChange(order[i+1]);
+  }
+  var tierSwitches = 0;
+  function tierChange(name){
+    /* resizing the canvas mid-scroll shows as a flash — never do it while
+       moving, and never oscillate more than a few times per session */
+    if(tierSwitches >= 3) return;
+    if(Math.abs(S.vRaw) > .05){ tier.bad = 0; tier.good = 0; return; }
+    tierSwitches++;
+    tier.name = name; tier.bad = 0; tier.good = 0; tierApply();
   }
   tierApply();
 
@@ -1054,13 +1062,24 @@ function bootFull(THREE){
     tierSample(dtMs);
   });
 
-  addEventListener('resize', function(){
+  /* mobile Chrome fires `resize` whenever the URL bar collapses/expands during
+     scroll; re-sizing the canvas there reads as a flash. Ignore pure-height
+     wiggles of browser chrome and debounce the rest. */
+  var lastW = innerWidth, lastH = innerHeight, rzT = 0;
+  function applyResize(){
+    lastW = innerWidth; lastH = innerHeight;
     BASE_FOV = innerWidth > innerHeight ? 42 : 58;
     camera.aspect = innerWidth/innerHeight;
     camera.fov = BASE_FOV; lastFov = BASE_FOV;
     camera.updateProjectionMatrix();
     sizeRenderer();
-  });
+  }
+  addEventListener('resize', function(){
+    var dw = Math.abs(innerWidth - lastW), dh = Math.abs(innerHeight - lastH);
+    if(dw === 0 && dh <= 160) return;               /* URL bar only */
+    clearTimeout(rzT);
+    rzT = setTimeout(applyResize, dw ? 60 : 220);
+  }, { passive:true });
 
   /* ---------- the ignition (this IS the loader) ---------- */
   var ignited = false;
