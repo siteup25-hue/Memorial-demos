@@ -1,0 +1,1 @@
+var e=new URL(`ort-wasm-simd-threaded.asyncify-CxOG5pUO.wasm`,import.meta.url).href;export{e as default};
